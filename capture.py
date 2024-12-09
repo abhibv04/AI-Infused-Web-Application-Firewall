@@ -1,93 +1,94 @@
-from scapy.all import sniff
+import time
+from datetime import datetime
+from zapv2 import ZAPv2
 import pandas as pd
-import os
-import re
 
-# Function to classify packets into 'malicious' or 'benign' based on various patterns
-def classify_packet(packet):
-    if packet.haslayer("IP"):  # Check if the packet has an IP layer
-        ip_src = packet["IP"].src
-        ip_dst = packet["IP"].dst
-        protocol = packet["IP"].proto
-        packet_length = len(packet)
+# OWASP ZAP Configuration
+ZAP_API_KEY = '92c82a0e-baab-4e05-b117-7f7b8d44ab51'
+ZAP_BASE_URL = 'http://localhost:8080'
+zap = ZAPv2(apikey=ZAP_API_KEY, proxies={'http': ZAP_BASE_URL, 'https': ZAP_BASE_URL})
 
-        # Additional packet details
-        src_port = packet.sport if packet.haslayer("TCP") or packet.haslayer("UDP") else None
-        dst_port = packet.dport if packet.haslayer("TCP") or packet.haslayer("UDP") else None
-        flags = packet.sprintf('%TCP.flags%') if packet.haslayer("TCP") else None
+OWASP_TOP_10_RULE_IDS = {
+    'Injection': [40018],
+    'Broken Authentication': [40024],
+    'Sensitive Data Exposure': [40029],
+    'XML External Entities (XXE)': [90023],
+    'Broken Access Control': [10109],
+    'Security Misconfiguration': [90033],
+    'Cross-Site Scripting (XSS)': [40012, 40014, 40016, 40017],
+    'Insecure Deserialization': [40014],
+    'Using Components with Known Vulnerabilities': [90003],
+    'Insufficient Logging & Monitoring': [40015],
+}
 
-        # Initialize label as benign
-        label = 'benign'
+CSV_FILE = 'zap_scan_data.csv'
+LOG_FILE = 'dynamic_waf_log_2.txt'
 
-        # Extract payload as a string (for analysis)
-        payload = str(packet.payload)
 
-        # Broad vulnerability detection logic (based on common malicious patterns)
-        if re.search(r'<script.*?>.*?</script>', payload, re.IGNORECASE):  # XSS or similar script injections
-            label = 'malicious'
-        elif re.search(r'(csrf_token|__RequestVerificationToken)[^&]*=[^&]*', payload, re.IGNORECASE):  # CSRF token misuse
-            label = 'malicious'
-        elif re.search(r'SELECT.*?FROM.*?WHERE', payload, re.IGNORECASE):  # SQL Injection or similar
-            label = 'malicious'
-        elif re.search(r'\b(?:GET|POST)\s+.*?\s+HTTP.*?\s*Connection:\s*close', payload, re.IGNORECASE):  # DDoS-like behavior
-            label = 'malicious'
-        elif re.search(r'<iframe.*?>.*?</iframe>', payload, re.IGNORECASE):  # Clickjacking
-            label = 'malicious'
+def set_owasp_top_10_rules():
+    zap.ascan.disable_all_scanners()
+    for rule_ids in OWASP_TOP_10_RULE_IDS.values():
+        for rule_id in rule_ids:
+            zap.ascan.enable_scanners(str(rule_id))
+    print("Configured ZAP to scan for OWASP Top 10 vulnerabilities.")
 
-        # More detailed patterns
-        elif re.search(r'(UNION\s+SELECT|UPDATE.*?SET|INSERT\s+INTO)', payload, re.IGNORECASE):  # General SQL injection patterns
-            label = 'malicious'
-        elif re.search(r'(eval\(|base64_decode\()', payload, re.IGNORECASE):  # Obfuscated/malicious code injections
-            label = 'malicious'
-        elif re.search(r'(/etc/passwd|/bin/bash|system\()', payload, re.IGNORECASE):  # Local file inclusion or command injection
-            label = 'malicious'
-        elif re.search(r'(xmlhttp\.open\(|fetch\()', payload, re.IGNORECASE):  # CSRF XMLHttpRequest misuse
-            label = 'malicious'
-        elif re.search(r'(iframe|frameborder|allowfullscreen)', payload, re.IGNORECASE):  # Clickjacking with advanced patterns
-            label = 'malicious'
-        elif re.search(r'(\bor\b.*=.*)', payload, re.IGNORECASE):  # SQL Injection with OR logic
-            label = 'malicious'
-        elif packet_length > 1500 and protocol == 6:  # Large payloads over TCP (could indicate flooding attacks)
-            label = 'malicious'
-        elif packet.haslayer("TCP"):  # Check if it has a TCP layer
-            tcp_layer = packet.getlayer("TCP")
-            if flags == "S" and not tcp_layer.ack:  # Suspicious SYN packets without ACK (indicative of SYN flood)
-                label = 'malicious'
 
-        # Create a dictionary with packet details (excluding the full payload)
-        data = {
-            'src_ip': ip_src,
-            'dst_ip': ip_dst,
-            'protocol': protocol,
-            'src_port': src_port,
-            'dst_port': dst_port,
-            'packet_length': packet_length,
-            'flags': flags,
-            'classification': label
-        }
+def log_to_csv(site, alerts):
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    data = []
+    for alert in alerts:
+        data.append({
+            'timestamp': timestamp,
+            'url': site,
+            'risk': alert['risk'],
+            'alert': alert['alert'],
+            'description': alert['description'],
+            'classification': 'malicious' if alert['risk'] in ['High', 'Medium'] else 'benign'
+        })
+    df = pd.DataFrame(data)
+    df.to_csv(CSV_FILE, mode='a', index=False, header=not pd.io.common.file_exists(CSV_FILE))
+    print(f"ZAP scan data for {site} logged to CSV.")
 
-        return data
-    return None
 
-# Function to process captured packets
-def process_packet(packet):
-    packet_data = classify_packet(packet)
-    if packet_data:
-        # Convert packet data to DataFrame
-        df = pd.DataFrame([packet_data])
+def log_to_file(site, alerts):
+    """Logs ZAP scan results in a structured and readable format."""
+    # Get the current date and time
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    current_time = datetime.now().strftime('%H:%M:%S')
+    
+    with open(LOG_FILE, 'a') as log_file:
+        # Write the scan date and time
+        log_file.write(f"\n=== Scan Results on {current_date} ===\n")
+        log_file.write(f"Website scanned on {current_time}: {site}\n")
+        log_file.write(f"{'-' * 50}\n")
         
-        # Write data to CSV, include header only if file is created fresh
-        file_exists = os.path.isfile("captured_and_classified_packets.csv")
-        df.to_csv("captured_and_classified_packets.csv", mode='a', header=not file_exists, index=False)
+        # Write detailed scan results for each alert
+        if alerts:
+            for alert in alerts:
+                log_file.write(f"Risk: {alert['risk']}\n")
+                log_file.write(f"Confidence: {alert['confidence']}\n")
+                log_file.write(f"Alert: {alert['alert']}\n")
+                log_file.write(f"Description: {alert['description']}\n")
+                log_file.write(f"{'-' * 50}\n")
+        else:
+            log_file.write("No vulnerabilities detected.\n")
+            log_file.write(f"{'-' * 50}\n")
+    print(f"ZAP scan results for {site} logged to {LOG_FILE}.")
 
-# Remove the existing CSV file if it exists (for fresh data capture every run)
-if os.path.isfile("captured_and_classified_packets.csv"):
-    os.remove("captured_and_classified_packets.csv")
-
-# Debugging output to confirm network interface
-print("Starting packet capture on interface enp0s3...")
-
-# Start capturing packets on a specified interface
-
-
-sniff(iface="enp0s3", prn=process_packet, store=0)  # Replace "enp0s3" with your network interface
+def scan_and_log_sites():
+    set_owasp_top_10_rules()
+    scanned_sites = set()
+    while True:
+        accessed_sites = zap.core.sites
+        for site in accessed_sites:
+            if site not in scanned_sites:
+                print(f"Scanning site: {site}")
+                zap.ascan.scan(site)
+                while int(zap.ascan.status(0)) < 100:
+                    print(f"Scan progress: {zap.ascan.status(0)}%")
+                    time.sleep(5)
+                alerts = zap.core.alerts(baseurl=site)
+                log_to_csv(site, alerts)  # Log to CSV
+                log_to_file(site, alerts)  # Log to text file
+                scanned_sites.add(site)
+        time.sleep(10)
