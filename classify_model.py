@@ -1,81 +1,77 @@
 import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, KFold, cross_val_score
-from sklearn.preprocessing import StandardScaler
-import numpy as np
-import joblib  # For saving and loading models and other artifacts
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+import joblib
 
-# Function to train and return a Logistic Regression model
-def train_model():
-    # Load dataset
-    data = pd.read_csv('captured_and_classified_packets.csv')
+MODEL_PATH = 'zap_classifier_model.pkl'
 
-    # Define features and target variable
-    X = data[['src_ip', 'dst_ip', 'protocol', 'src_port', 'dst_port', 'packet_length', 'flags']]
-    y = data['classification']
-
-    # Convert categorical features to numerical (one-hot encoding)
-    X = pd.get_dummies(X)
-
-    # Handle NaN and infinite values in features
-    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    # Save the columns of the one-hot encoded features for future prediction
-    column_order = X.columns
-    joblib.dump(column_order, 'column_order.pkl')  # Save the column order
-
-    # Split the data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-
-    # Standardize the features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-
-    # Save the scaler to be reused during classification
-    joblib.dump(scaler, 'scaler.pkl')
-
-    # Train the Logistic Regression model
-    lr_model = LogisticRegression(random_state=42)
-    lr_model.fit(X_train_scaled, y_train)
-
-    # Perform cross-validation and return the trained model
-    kf = KFold(n_splits=5, random_state=42, shuffle=True)
-    cv_scores = cross_val_score(lr_model, X_train_scaled, y_train, cv=kf)
+def train_model(csv_file):
+    print("Training model on real-time data...")
     
-    print(f"Model trained. Mean cross-validation score: {cv_scores.mean():.4f}")
+    # Load the CSV file
+    data = pd.read_csv(csv_file)
+    if data.empty:
+        print("No data available for training.")
+        return None
     
-    # Save the trained model to a file
-    joblib.dump(lr_model, 'logistic_regression_model.pkl')
-
-    return lr_model
-
-# Function to classify new batch of packets using trained model
-def classify_packets(model):
-    # Load the column order and scaler
-    column_order = joblib.load('column_order.pkl')
-    scaler = joblib.load('scaler.pkl')
-
-    # Load new data
-    data = pd.read_csv('captured_and_classified_packets.csv')
+    # Convert risk levels to numeric values
+    risk_encoder = LabelEncoder()
+    data['risk_numeric'] = risk_encoder.fit_transform(data['risk'])
     
-    # Convert data to match model format (one-hot encode)
-    X = data[['src_ip', 'dst_ip', 'protocol', 'src_port', 'dst_port', 'packet_length', 'flags']]
-    X = pd.get_dummies(X)
-
-    # Align the columns of the new data with the original training data
-    X = X.reindex(columns=column_order, fill_value=0)  # Missing columns filled with 0
-
-    # Handle NaN and infinite values in features
-    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    # Standardize using saved scaler
-    X_scaled = scaler.transform(X)
+    # Map classification to numeric labels
+    data['label'] = data['classification'].apply(lambda x: 1 if x == 'malicious' else 0)
     
-    # Make predictions
-    predictions = model.predict(X_scaled)
-    data['predictions'] = predictions
+    # Features and labels
+    X = data[['risk_numeric']]
+    y = data['label']
     
-    # Write predictions to the same file (optional, can save elsewhere)
-    data.to_csv('captured_and_classified_packets.csv', index=False)
-   
+    # Split into train and test sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Train the model
+    model = LogisticRegression()  # Use RandomForestClassifier() for more complex scenarios
+    model.fit(X_train, y_train)
+    
+    # Test the model
+    y_pred = model.predict(X_test)
+    print(f"Model Accuracy: {accuracy_score(y_test, y_pred)}")
+    
+    # Save the model
+    joblib.dump(model, MODEL_PATH)
+    print(f"Model saved to {MODEL_PATH}")
+    
+    return model
+
+def classify_data(csv_file, model):
+    print("Classifying new data in real-time...")
+    
+    # Load the CSV file
+    data = pd.read_csv(csv_file)
+    if data.empty:
+        print("No data available for classification.")
+        return
+    
+    # Check if the model is loaded
+    if model is None:
+        print("Model is not loaded. Cannot classify data.")
+        return
+    
+    # Convert risk levels to numeric values using the same encoder as in training
+    risk_encoder = LabelEncoder()
+    data['risk_numeric'] = risk_encoder.fit_transform(data['risk'])
+    
+    # Features for classification
+    X = data[['risk_numeric']]
+    
+    # Predict classifications
+    predictions = model.predict(X)
+    data['prediction'] = predictions
+    data['classification'] = data['prediction'].apply(lambda x: 'malicious' if x == 1 else 'benign')
+    
+    # Save classified data to a new CSV file
+    classified_file = 'classified_data.csv'
+    data.to_csv(classified_file, index=False)
+    print(f"Classified data saved to {classified_file}")
