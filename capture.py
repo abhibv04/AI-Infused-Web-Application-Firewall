@@ -4,7 +4,7 @@ from zapv2 import ZAPv2
 import pandas as pd
 
 # OWASP ZAP Configuration
-ZAP_API_KEY = '92c82a0e-baab-4e05-b117-7f7b8d44ab51'
+ZAP_API_KEY = 'YOUR API KEY'
 ZAP_BASE_URL = 'http://localhost:8080'
 zap = ZAPv2(apikey=ZAP_API_KEY, proxies={'http': ZAP_BASE_URL, 'https': ZAP_BASE_URL})
 
